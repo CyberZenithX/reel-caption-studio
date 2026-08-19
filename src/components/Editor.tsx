@@ -1,4 +1,5 @@
 import { ReelState, CaptionSegment } from '../types';
+import { stretchRate } from '../lib/util';
 import RichText from './RichText';
 
 interface Props {
@@ -183,6 +184,14 @@ export default function Editor(props: Props) {
             onChange={(e) => patch({ totalSec: Number(e.target.value) })}
           />
         </label>
+        {state.bgType === 'video' && state.bgDurationSec != null && (() => {
+          const rate = stretchRate(state.bgDurationSec, state.totalSec);
+          return rate < 1 ? (
+            <p className="hint">
+              {state.totalSec}s from a {Math.round(state.bgDurationSec)}s clip · {rate.toFixed(2)}× slow motion
+            </p>
+          ) : null;
+        })()}
         <label className="slider">
           <span>Font size: {state.fontSize}px</span>
           <input

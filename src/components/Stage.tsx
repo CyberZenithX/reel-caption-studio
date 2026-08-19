@@ -68,7 +68,6 @@ export default function Stage({ state, mode, currentTime, bgRef }: StageProps) {
           className="bg-media"
           src={state.bgSrc}
           muted
-          loop
           playsInline
           preload="auto"
         />

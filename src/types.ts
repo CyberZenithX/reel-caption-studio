@@ -15,6 +15,7 @@ export interface ReelState {
   bgSrc: string | null; // object URL
   bgType: 'video' | 'image' | null;
   bgName: string | null;
+  bgDurationSec: number | null; // native duration of the uploaded video, if any
   hookHtml: string; // optional top line ('' = none)
   hookRtl: boolean;
   hookAppearSec: number; // when the hook fades in
@@ -31,6 +32,7 @@ export const DEFAULT_STATE: ReelState = {
   bgSrc: null,
   bgType: null,
   bgName: null,
+  bgDurationSec: null,
   hookHtml:
     '\u201CIf he dislikes one of her characteristics, he will be pleased with another.\u201D',
   hookRtl: false,

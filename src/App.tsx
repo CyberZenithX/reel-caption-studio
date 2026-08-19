@@ -3,7 +3,7 @@ import Editor from './components/Editor';
 import Preview from './components/Preview';
 import Stage from './components/Stage';
 import { DEFAULT_STATE, ReelState, CaptionSegment } from './types';
-import { uid, download } from './lib/util';
+import { uid, download, videoTimeFor, stretchRate } from './lib/util';
 import { exportReel, ExportBox } from './lib/exporter';
 
 export default function App() {
@@ -26,13 +26,17 @@ export default function App() {
       if (prevUrl.current) URL.revokeObjectURL(prevUrl.current);
       prevUrl.current = url;
       const type: 'video' | 'image' = file.type.startsWith('video') ? 'video' : 'image';
-      setState((s) => ({ ...s, bgSrc: url, bgType: type, bgName: file.name }));
+      setState((s) => ({ ...s, bgSrc: url, bgType: type, bgName: file.name, bgDurationSec: null }));
       if (type === 'video') {
         const v = document.createElement('video');
         v.preload = 'metadata';
         v.onloadedmetadata = () => {
           if (v.duration && isFinite(v.duration)) {
-            setState((s) => ({ ...s, totalSec: Math.max(2, Math.round(v.duration)) }));
+            setState((s) => ({
+              ...s,
+              totalSec: Math.max(2, Math.round(v.duration)),
+              bgDurationSec: v.duration,
+            }));
           }
         };
         v.src = url;
@@ -44,7 +48,7 @@ export default function App() {
   const clearBg = useCallback(() => {
     if (prevUrl.current) URL.revokeObjectURL(prevUrl.current);
     prevUrl.current = null;
-    patch({ bgSrc: null, bgType: null, bgName: null });
+    patch({ bgSrc: null, bgType: null, bgName: null, bgDurationSec: null });
   }, [patch]);
 
   // ---- segment helpers ----
@@ -84,30 +88,41 @@ export default function App() {
     if (!playing) return;
     let raf = 0;
     let last = performance.now();
+    let cur = t; // local clock so this effect doesn't need to restart every frame
     const loop = (now: number) => {
       const dt = (now - last) / 1000;
       last = now;
-      setT((p) => (p + dt >= state.totalSec ? 0 : p + dt));
+      cur = cur + dt >= state.totalSec ? 0 : cur + dt;
+      setT(cur);
+      // Keep the background video locked to the reel clock (stretched or
+      // trimmed to totalSec) instead of drifting or wrapping on its own.
+      const el = bgRef.current;
+      if (el instanceof HTMLVideoElement) {
+        const target = videoTimeFor(cur, state.bgDurationSec, state.totalSec);
+        if (Math.abs(el.currentTime - target) > 0.15) el.currentTime = target;
+      }
       raf = requestAnimationFrame(loop);
     };
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
-  }, [playing, state.totalSec]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playing, state.totalSec, state.bgDurationSec]);
 
   useEffect(() => {
     const el = bgRef.current;
     if (el instanceof HTMLVideoElement) {
+      el.playbackRate = stretchRate(state.bgDurationSec, state.totalSec);
       if (playing) el.play().catch(() => {});
       else el.pause();
     }
-  }, [playing, state.bgSrc]);
+  }, [playing, state.bgSrc, state.totalSec, state.bgDurationSec]);
 
   useEffect(() => {
     const el = bgRef.current;
     if (!playing && el instanceof HTMLVideoElement && el.duration) {
-      el.currentTime = t % el.duration;
+      el.currentTime = videoTimeFor(t, state.bgDurationSec, state.totalSec);
     }
-  }, [t, playing]);
+  }, [t, playing, state.bgDurationSec, state.totalSec]);
 
   // ---- export ----
   const handleExport = useCallback(async () => {
@@ -149,6 +164,7 @@ export default function App() {
         bgType: state.bgType,
         bgColor: '#111111',
         totalSec: state.totalSec,
+        bgDurationSec: state.bgDurationSec,
         onProgress: (phase, ratio) => setProgress({ phase, ratio }),
       });
 
