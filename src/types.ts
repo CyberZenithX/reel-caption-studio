@@ -34,28 +34,28 @@ export const DEFAULT_STATE: ReelState = {
   hookHtml:
     '\u201CIf he dislikes one of her characteristics, he will be pleased with another.\u201D',
   hookRtl: false,
-  hookAppearSec: 2,
+  hookAppearSec: 0,
   segments: [
     {
       id: 's1',
       html:
         '\u201CThat is not relationship advice. That is a <span style="color:#9E4B57">hadith</span> of Prophet <span style="color:#9E4B57">Muhammad</span> \uFDFA.\u201D',
-      appearSec: 4,
+      appearSec: 2,
       rtl: false,
     },
     {
       id: 's2',
       html: 'Read the caption for the full teaching.',
-      appearSec: 5,
+      appearSec: 4,
       rtl: false,
     },
   ],
   accentColor: '#9E4B57',
-  totalSec: 10,
-  fontSize: 46,
-  firstBoxTop: 470,
+  totalSec: 13,
+  fontSize: 49,
+  firstBoxTop: 360,
   boxGap: 26,
-  maxBoxWidth: 900,
+  maxBoxWidth: 950,
 };
 
 export const SWATCHES = [
