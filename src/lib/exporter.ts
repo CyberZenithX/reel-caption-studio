@@ -222,7 +222,7 @@ async function normalizeToMp4(
     'out.mp4',
   ]);
   const data = (await ffmpeg.readFile('out.mp4')) as Uint8Array;
-  return new Blob([data], { type: 'video/mp4' });
+  return new Blob([new Uint8Array(data)], { type: 'video/mp4' });
 }
 
 export interface ExportResult {
