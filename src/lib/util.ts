@@ -12,6 +12,33 @@ export function boxOpacity(t: number, appearSec: number, always = false): number
   return clamp((t - appearSec) / FADE_SEC, 0, 1);
 }
 
+/** Browsers refuse to play media below roughly this rate. */
+export const MIN_PLAYBACK_RATE = 0.0625;
+
+/**
+ * Playback rate for the background video so it exactly fills totalSec
+ * instead of looping. 1 (no change) once the clip already covers the
+ * reel; below MIN_PLAYBACK_RATE the video simply plays as slow as the
+ * browser allows and periodic resyncing (see videoTimeFor) keeps it
+ * from finishing early.
+ */
+export function stretchRate(bgDurationSec: number | null, totalSec: number): number {
+  if (!bgDurationSec || !isFinite(bgDurationSec) || bgDurationSec <= 0) return 1;
+  if (bgDurationSec >= totalSec) return 1;
+  return clamp(bgDurationSec / totalSec, MIN_PLAYBACK_RATE, 1);
+}
+
+/** Where the background video's currentTime should sit for reel-time t. */
+export function videoTimeFor(
+  t: number,
+  bgDurationSec: number | null,
+  totalSec: number
+): number {
+  const rate = stretchRate(bgDurationSec, totalSec);
+  const target = t * rate;
+  return bgDurationSec ? clamp(target, 0, bgDurationSec) : target;
+}
+
 /** object-fit: cover math -> where to draw source media on a target canvas. */
 export function coverRect(
   srcW: number,

@@ -1,6 +1,6 @@
 import { toPng } from 'html-to-image';
 import { STAGE_W, STAGE_H, FPS } from '../types';
-import { boxOpacity, coverRect } from './util';
+import { boxOpacity, coverRect, stretchRate, videoTimeFor } from './util';
 
 export interface ExportBox {
   el: HTMLElement; // full-size DOM node to rasterize
@@ -18,6 +18,7 @@ export interface ExportInput {
   bgType: 'video' | 'image' | null;
   bgColor: string; // fallback fill when no media
   totalSec: number;
+  bgDurationSec: number | null;
   onProgress?: (phase: string, ratio: number) => void;
 }
 
@@ -128,8 +129,9 @@ async function recordRealtime(
   const bg = input.bgEl;
   if (bg instanceof HTMLVideoElement) {
     bg.muted = true;
-    bg.loop = true;
+    bg.loop = false;
     bg.currentTime = 0;
+    bg.playbackRate = stretchRate(input.bgDurationSec, input.totalSec);
     try {
       await bg.play();
     } catch {
@@ -147,6 +149,10 @@ async function recordRealtime(
     const tick = () => {
       const elapsed = performance.now() - start;
       const t = elapsed / 1000;
+      if (bg instanceof HTMLVideoElement) {
+        const target = videoTimeFor(t, input.bgDurationSec, input.totalSec);
+        if (Math.abs(bg.currentTime - target) > 0.15) bg.currentTime = target;
+      }
       drawFrame(ctx, input, rasters, t);
       input.onProgress?.('Recording', Math.min(1, elapsed / totalMs));
       if (elapsed >= totalMs) {
@@ -216,7 +222,7 @@ async function normalizeToMp4(
     'out.mp4',
   ]);
   const data = (await ffmpeg.readFile('out.mp4')) as Uint8Array;
-  return new Blob([data], { type: 'video/mp4' });
+  return new Blob([new Uint8Array(data)], { type: 'video/mp4' });
 }
 
 export interface ExportResult {
