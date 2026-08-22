@@ -33,21 +33,19 @@ export const DEFAULT_STATE: ReelState = {
   bgType: null,
   bgName: null,
   bgDurationSec: null,
-  hookHtml:
-    '\u201CIf he dislikes one of her characteristics, he will be pleased with another.\u201D',
+  hookHtml: '',
   hookRtl: false,
   hookAppearSec: 0,
   segments: [
     {
       id: 's1',
-      html:
-        '\u201CThat is not relationship advice. That is a <span style="color:#9E4B57">hadith</span> of Prophet <span style="color:#9E4B57">Muhammad</span> \uFDFA.\u201D',
+      html: '',
       appearSec: 2,
       rtl: false,
     },
     {
       id: 's2',
-      html: 'Read the caption for the full teaching.',
+      html: '',
       appearSec: 4,
       rtl: false,
     },
