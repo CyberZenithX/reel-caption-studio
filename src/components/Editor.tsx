@@ -242,6 +242,10 @@ export default function Editor(props: Props) {
             <span className="progress-label">
               {props.progress.phase} · {Math.round(props.progress.ratio * 100)}%
             </span>
+            <span className="progress-label">
+              Keep this tab open — switching away pauses the export until you
+              come back.
+            </span>
           </div>
         )}
       </section>
