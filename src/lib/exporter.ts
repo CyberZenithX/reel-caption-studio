@@ -22,8 +22,8 @@ export interface ExportInput {
   onProgress?: (phase: string, ratio: number) => void;
 }
 
-interface RasterBox {
-  img: HTMLImageElement;
+export interface RasterBox {
+  img: ImageBitmap;
   x: number;
   y: number;
   w: number;
@@ -32,10 +32,12 @@ interface RasterBox {
   always: boolean;
 }
 
-function loadImage(src: string): Promise<HTMLImageElement> {
+function loadBitmap(src: string): Promise<ImageBitmap> {
   return new Promise((res, rej) => {
     const img = new Image();
-    img.onload = () => res(img);
+    img.onload = () => {
+      createImageBitmap(img).then(res, rej);
+    };
     img.onerror = () => rej(new Error('raster load failed'));
     img.src = src;
   });
@@ -58,36 +60,45 @@ function pickMime() {
   return { type: '', ext: 'webm' as const };
 }
 
-/** Rasterize every overlay box to a PNG image once, up front. */
-async function rasterize(boxes: ExportBox[], onProgress?: ExportInput['onProgress']) {
+/** Rasterize every overlay box to a bitmap once, up front. */
+export async function rasterize(boxes: ExportBox[], onProgress?: ExportInput['onProgress']) {
   await (document as any).fonts?.ready;
   const out: RasterBox[] = [];
   for (let i = 0; i < boxes.length; i++) {
     const b = boxes[i];
     const dataUrl = await toPng(b.el, { pixelRatio: 1, cacheBust: true, skipFonts: false });
-    const img = await loadImage(dataUrl);
+    const img = await loadBitmap(dataUrl);
     out.push({ img, x: b.x, y: b.y, w: b.w, h: b.h, appearSec: b.appearSec, always: b.always });
     onProgress?.('Rendering text', (i + 1) / boxes.length);
   }
   return out;
 }
 
-/** Draw one composited frame at time t. */
-function drawFrame(
+/**
+ * Draw one composited frame at time t onto a canvas of size
+ * (STAGE_W * scale) x (STAGE_H * scale). `scale` defaults to 1 (native
+ * 1080x1920); a lower scale lets the WebCodecs path step down resolution
+ * on devices whose hardware encoder rejects the native size, reusing this
+ * exact compositing logic instead of a second draw path.
+ */
+export function drawFrame(
   ctx: CanvasRenderingContext2D,
   input: ExportInput,
   rasters: RasterBox[],
-  t: number
+  t: number,
+  scale = 1
 ) {
-  ctx.clearRect(0, 0, STAGE_W, STAGE_H);
+  const w = STAGE_W * scale;
+  const h = STAGE_H * scale;
+  ctx.clearRect(0, 0, w, h);
   ctx.fillStyle = input.bgColor;
-  ctx.fillRect(0, 0, STAGE_W, STAGE_H);
+  ctx.fillRect(0, 0, w, h);
 
   const bg = input.bgEl;
   if (bg) {
     const sw = bg instanceof HTMLVideoElement ? bg.videoWidth : bg.naturalWidth;
     const sh = bg instanceof HTMLVideoElement ? bg.videoHeight : bg.naturalHeight;
-    const r = coverRect(sw, sh, STAGE_W, STAGE_H);
+    const r = coverRect(sw, sh, w, h);
     try {
       ctx.drawImage(bg, r.x, r.y, r.w, r.h);
     } catch {
@@ -99,7 +110,7 @@ function drawFrame(
     const op = boxOpacity(t, b.appearSec, b.always);
     if (op <= 0) continue;
     ctx.globalAlpha = op;
-    ctx.drawImage(b.img, b.x, b.y, b.w, b.h);
+    ctx.drawImage(b.img, b.x * scale, b.y * scale, b.w * scale, b.h * scale);
   }
   ctx.globalAlpha = 1;
 }
@@ -233,11 +244,28 @@ export interface ExportResult {
 
 export async function exportReel(input: ExportInput): Promise<ExportResult> {
   const rasters = await rasterize(input.boxes, input.onProgress);
-  const recorded = await recordRealtime(input, rasters);
 
-  // Always run the recording through ffmpeg so the mp4 is standards-clean and
-  // uploads everywhere. If ffmpeg can't load (e.g. offline on first export),
-  // fall back to the raw recording so the user still gets a file.
+  // Prefer a deterministic WebCodecs encode: frame i is always at i/FPS
+  // seconds regardless of how long the device took to produce it, so a
+  // slow phone gets a slower export instead of a stuttering one. On
+  // Android this also routes through the hardware H.264 encoder.
+  const { pickEncoderConfig, encodeWithWebCodecs } = await import('./webcodecsExport');
+  const cfg = await pickEncoderConfig();
+  if (cfg) {
+    try {
+      const blob = await encodeWithWebCodecs(input, rasters, cfg);
+      return { blob, ext: 'mp4', normalized: true };
+    } catch (err) {
+      console.error('WebCodecs export failed, falling back to real-time recording', err);
+    }
+  }
+
+  // Fallback for browsers without a usable WebCodecs encoder: record the
+  // composited canvas in real time, then normalize with ffmpeg.wasm so the
+  // mp4 is standards-clean and uploads everywhere. If ffmpeg can't load
+  // (e.g. offline on first export), fall back further to the raw recording
+  // so the user still gets a file.
+  const recorded = await recordRealtime(input, rasters);
   try {
     const mp4 = await normalizeToMp4(recorded.blob, recorded.ext, input.onProgress);
     return { blob: mp4, ext: 'mp4', normalized: true };
