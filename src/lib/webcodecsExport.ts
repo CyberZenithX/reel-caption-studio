@@ -96,32 +96,84 @@ async function pickAudioConfig(): Promise<AudioEncoderConfig | null> {
   }
 }
 
-/** Wait for a video element to seek to (approximately) `time`, then settle
- *  on the next presented frame where the browser supports that signal. */
+const SEEK_TIMEOUT_MS = 5000;
+/** How far off `currentTime` may land and still count as the right frame
+ *  (~1.5 frames of a 30fps source). */
+const SEEK_TOLERANCE_SEC = 0.05;
+/** Cap on waiting for the *presentation* callback once the frame is already
+ *  decoded -- see the note in `seekTo`. */
+const PRESENT_TIMEOUT_MS = 200;
+
+/**
+ * Wait for a video element to seek to `time` and have that frame decoded.
+ *
+ * Never resolve on a bare timeout: drawing whatever stale frame the decoder
+ * happens to be holding is precisely the duplicated-frame judder this export
+ * path exists to eliminate. If the seek genuinely didn't land, fail loudly so
+ * the caller can retry rather than silently baking in a bad frame.
+ */
 function seekTo(video: HTMLVideoElement, time: number): Promise<void> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     let settled = false;
+    const cleanup = () => {
+      video.removeEventListener('seeked', onSeeked);
+      clearTimeout(timer);
+    };
     const finish = () => {
       if (settled) return;
       settled = true;
-      video.removeEventListener('seeked', onSeeked);
-      clearTimeout(timer);
+      cleanup();
       resolve();
     };
     const onSeeked = () => {
-      // `seeked` can fire a tick before the frame is actually presented;
-      // requestVideoFrameCallback (Chrome/Safari) confirms it landed. Fall
-      // back to resolving immediately where that API doesn't exist.
-      if (typeof video.requestVideoFrameCallback === 'function') {
+      // `seeked` already means the frame is decoded and drawable.
+      // requestVideoFrameCallback additionally confirms it was *presented*,
+      // which is nicer but never fires while the page is hidden -- so cap the
+      // wait instead of stalling a whole frame on a callback that isn't coming.
+      if (typeof video.requestVideoFrameCallback === 'function' && !document.hidden) {
         video.requestVideoFrameCallback(() => finish());
+        setTimeout(finish, PRESENT_TIMEOUT_MS);
       } else {
         finish();
       }
     };
-    // A stuck seek (bad source, decoder hiccup) must never hang the export.
-    const timer = setTimeout(finish, 2000);
-    video.addEventListener('seeked', onSeeked, { once: true });
+    const timer = setTimeout(() => {
+      if (settled) return;
+      // No event fired, but the seek may still have landed -- backgrounded
+      // tabs suppress media events. Trust currentTime over the missing event.
+      if (Math.abs(video.currentTime - time) <= SEEK_TOLERANCE_SEC) {
+        finish();
+        return;
+      }
+      settled = true;
+      cleanup();
+      reject(new Error(`background video seek to ${time.toFixed(3)}s timed out`));
+    }, SEEK_TIMEOUT_MS);
+    video.addEventListener('seeked', onSeeked);
     video.currentTime = time;
+  });
+}
+
+/**
+ * Resolve once the page is visible.
+ *
+ * Backgrounding the tab suspends video decoding and stops
+ * requestVideoFrameCallback, so frames sourced from a <video> can't be
+ * produced correctly while hidden. Because output timestamps are explicit,
+ * pausing here costs only wall-clock time and never output quality -- whereas
+ * pushing frames while hidden would bake in duplicates. This is the direct
+ * counterpart to the old real-time recorder's failure mode, where
+ * backgrounding froze the canvas but the recorder kept sampling it.
+ */
+function waitUntilVisible(): Promise<void> {
+  if (!document.hidden) return Promise.resolve();
+  return new Promise((resolve) => {
+    const onVisible = () => {
+      if (document.hidden) return;
+      document.removeEventListener('visibilitychange', onVisible);
+      resolve();
+    };
+    document.addEventListener('visibilitychange', onVisible);
   });
 }
 
@@ -182,9 +234,19 @@ export async function encodeWithWebCodecs(
     fastStart: 'in-memory',
   });
 
+  // Encoder errors arrive asynchronously on this callback, so collect them and
+  // check between frames. Silently encoding into a dead encoder (Android can
+  // reclaim the hardware codec while the app is backgrounded) would otherwise
+  // produce a truncated file with no indication anything went wrong.
+  const encoderErrors: Error[] = [];
+  const onEncoderError = (label: string) => (e: unknown) => {
+    console.error(`${label} error`, e);
+    encoderErrors.push(e instanceof Error ? e : new Error(String(e)));
+  };
+
   const videoEncoder = new VideoEncoder({
     output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
-    error: (e) => console.error('VideoEncoder error', e),
+    error: onEncoderError('VideoEncoder'),
   });
   videoEncoder.configure({
     codec: cfg.codec,
@@ -201,7 +263,7 @@ export async function encodeWithWebCodecs(
   if (audioCfg) {
     audioEncoder = new AudioEncoder({
       output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
-      error: (e) => console.error('AudioEncoder error', e),
+      error: onEncoderError('AudioEncoder'),
     });
     audioEncoder.configure(audioCfg);
   }
@@ -224,13 +286,28 @@ export async function encodeWithWebCodecs(
   try {
     for (let i = 0; i < totalFrames; i++) {
       const t = i / FPS;
+      if (encoderErrors.length) throw encoderErrors[0];
 
       if (bgVideo) {
+        // Only gate on visibility when a <video> is actually being sampled:
+        // its decoder is what the browser suspends. A still image or solid
+        // colour composites fine while hidden, so those exports can keep
+        // running in a backgrounded tab.
+        await waitUntilVisible();
+
         const target = videoTimeFor(t, input.bgDurationSec, input.totalSec);
         // Several output frames map to the same source frame under slow-mo
         // stretch; skip redundant seeks rather than re-seeking every frame.
         if (Math.abs(target - lastSeeked) >= 1 / 60) {
-          await seekTo(bgVideo, target);
+          try {
+            await seekTo(bgVideo, target);
+          } catch (err) {
+            // One retry: a seek that timed out because the tab was hidden
+            // mid-flight usually succeeds immediately once it's visible again.
+            console.warn('background video seek failed, retrying', err);
+            await waitUntilVisible();
+            await seekTo(bgVideo, target);
+          }
           lastSeeked = target;
         }
       }

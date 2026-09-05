@@ -242,35 +242,66 @@ export interface ExportResult {
   normalized: boolean; // false = raw recording (compatibility not guaranteed)
 }
 
-export async function exportReel(input: ExportInput): Promise<ExportResult> {
-  const rasters = await rasterize(input.boxes, input.onProgress);
-
-  // Prefer a deterministic WebCodecs encode: frame i is always at i/FPS
-  // seconds regardless of how long the device took to produce it, so a
-  // slow phone gets a slower export instead of a stuttering one. On
-  // Android this also routes through the hardware H.264 encoder.
-  const { pickEncoderConfig, encodeWithWebCodecs } = await import('./webcodecsExport');
-  const cfg = await pickEncoderConfig();
-  if (cfg) {
-    try {
-      const blob = await encodeWithWebCodecs(input, rasters, cfg);
-      return { blob, ext: 'mp4', normalized: true };
-    } catch (err) {
-      console.error('WebCodecs export failed, falling back to real-time recording', err);
-    }
-  }
-
-  // Fallback for browsers without a usable WebCodecs encoder: record the
-  // composited canvas in real time, then normalize with ffmpeg.wasm so the
-  // mp4 is standards-clean and uploads everywhere. If ffmpeg can't load
-  // (e.g. offline on first export), fall back further to the raw recording
-  // so the user still gets a file.
-  const recorded = await recordRealtime(input, rasters);
+/**
+ * Hold a screen wake lock for the duration of the export.
+ *
+ * The screen switching off is the accidental version of backgrounding the
+ * tab, and it's especially damaging to the real-time fallback path, where it
+ * stops requestAnimationFrame while MediaRecorder keeps sampling the frozen
+ * canvas. Best effort: unsupported or denied just means no lock.
+ */
+async function acquireWakeLock(): Promise<{ release: () => void }> {
   try {
-    const mp4 = await normalizeToMp4(recorded.blob, recorded.ext, input.onProgress);
-    return { blob: mp4, ext: 'mp4', normalized: true };
-  } catch (err) {
-    console.error('mp4 normalize failed, returning raw recording', err);
-    return { blob: recorded.blob, ext: recorded.ext, normalized: false };
+    const sentinel = await (navigator as any).wakeLock?.request('screen');
+    if (!sentinel) return { release: () => {} };
+    return {
+      release: () => {
+        try {
+          sentinel.release();
+        } catch {
+          /* already released */
+        }
+      },
+    };
+  } catch {
+    return { release: () => {} };
+  }
+}
+
+export async function exportReel(input: ExportInput): Promise<ExportResult> {
+  const wakeLock = await acquireWakeLock();
+  try {
+    const rasters = await rasterize(input.boxes, input.onProgress);
+
+    // Prefer a deterministic WebCodecs encode: frame i is always at i/FPS
+    // seconds regardless of how long the device took to produce it, so a
+    // slow phone gets a slower export instead of a stuttering one. On
+    // Android this also routes through the hardware H.264 encoder.
+    const { pickEncoderConfig, encodeWithWebCodecs } = await import('./webcodecsExport');
+    const cfg = await pickEncoderConfig();
+    if (cfg) {
+      try {
+        const blob = await encodeWithWebCodecs(input, rasters, cfg);
+        return { blob, ext: 'mp4', normalized: true };
+      } catch (err) {
+        console.error('WebCodecs export failed, falling back to real-time recording', err);
+      }
+    }
+
+    // Fallback for browsers without a usable WebCodecs encoder: record the
+    // composited canvas in real time, then normalize with ffmpeg.wasm so the
+    // mp4 is standards-clean and uploads everywhere. If ffmpeg can't load
+    // (e.g. offline on first export), fall back further to the raw recording
+    // so the user still gets a file.
+    const recorded = await recordRealtime(input, rasters);
+    try {
+      const mp4 = await normalizeToMp4(recorded.blob, recorded.ext, input.onProgress);
+      return { blob: mp4, ext: 'mp4', normalized: true };
+    } catch (err) {
+      console.error('mp4 normalize failed, returning raw recording', err);
+      return { blob: recorded.blob, ext: recorded.ext, normalized: false };
+    }
+  } finally {
+    wakeLock.release();
   }
 }
